@@ -17,6 +17,8 @@ class Config:
     SERIAL_BAUD_RATE = int(os.getenv("SERIAL_BAUD_RATE", "9600"))
     SERIAL_RETRY_SECONDS = float(os.getenv("SERIAL_RETRY_SECONDS", "5"))
     WEATHER_TIMEOUT_SECONDS = float(os.getenv("WEATHER_TIMEOUT_SECONDS", "8"))
+    INGEST_TOKEN = os.getenv("INGEST_TOKEN")
+    CLOUD_DEPLOYMENT = os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"} or bool(os.getenv("RENDER_SERVICE_ID"))
     JSON_SORT_KEYS = False
 
 
