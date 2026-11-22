@@ -9,6 +9,7 @@ import pytest
 
 from app import create_app
 from backend.serial_service import VALID_READING_TIMEOUT_SECONDS, validate_reading
+from serial_bridge import parse_reading
 
 
 @pytest.fixture
@@ -18,6 +19,7 @@ def client(tmp_path):
         "DATABASE_PATH": str(tmp_path / "api-test.db"),
         "SERIAL_PORT": "COM3",
         "CORS_ENABLED": False,
+        "INGEST_TOKEN": "test-ingest-token",
     })
     return app.test_client(), app
 
@@ -110,6 +112,64 @@ def test_invalid_serial_data_does_not_mark_arduino_connected(client):
     assert status["connected"] is False
     assert status["state"] == "connecting"
     assert status["last_error"]
+
+
+def test_ingest_requires_token_and_accepts_valid_sensor_json(client):
+    test_client, _app = client
+
+    missing = test_client.post("/api/ingest", json={
+        "temperature": 29.0,
+        "humidity": 65.0,
+        "air_quality": 350,
+        "rain_value": 850,
+    })
+    wrong = test_client.post(
+        "/api/ingest",
+        headers={"Authorization": "Bearer wrong-token"},
+        json={
+            "temperature": 29.0,
+            "humidity": 65.0,
+            "air_quality": 350,
+            "rain_value": 850,
+        },
+    )
+    valid = test_client.post(
+        "/api/ingest",
+        headers={"Authorization": "Bearer test-ingest-token"},
+        json={
+            "temperature": 29.0,
+            "humidity": 65.0,
+            "air_quality": 350,
+            "rain_value": 850,
+        },
+    )
+    invalid = test_client.post(
+        "/api/ingest",
+        headers={"Authorization": "Bearer test-ingest-token"},
+        json={"temperature": 29.0, "humidity": 65.0, "air_quality": 1024},
+    )
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert valid.status_code == 200
+    assert valid.get_json()["data"]["reading"]["air_quality"] == 350
+    assert invalid.status_code == 400
+
+    live = test_client.get("/api/live").get_json()["data"]
+    assert live["reading"]["rain_value"] == 850
+    assert live["ingest"]["connected"] is True
+
+
+def test_serial_bridge_ignores_startup_messages_and_validates_json():
+    assert parse_reading("booting...") is None
+    assert parse_reading(
+        '{"temperature":29.0,"humidity":65.0,"air_quality":350,"rain_value":850}'
+    ) == {
+        "temperature": 29.0,
+        "humidity": 65.0,
+        "air_quality": 350,
+        "rain_value": 850,
+    }
 
 
 def test_serial_service_retries_after_port_error_and_accepts_reconnected_data(client, monkeypatch):

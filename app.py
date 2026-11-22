@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import time
+import hmac
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -41,6 +42,12 @@ def create_app(test_config=None):
         if key not in current_settings:
             database.save_settings(app.config["DATABASE_PATH"], {key: value})
     app.extensions["serial_service"] = SerialService(app)
+    app.extensions["ingest_status"] = {
+        "last_message_at": None,
+        "last_error": None,
+        "last_reading": None,
+        "lock": threading.Lock(),
+    }
     app.extensions["weather_service"] = WeatherService(app.config["WEATHER_TIMEOUT_SECONDS"])
     app.extensions["weather_cache"] = {"updated": 0.0, "data": None, "lock": threading.Lock()}
     if app.config.get("CORS_ENABLED", False):
@@ -52,6 +59,28 @@ def create_app(test_config=None):
     def location_settings():
         settings = database.get_settings(app.config["DATABASE_PATH"])
         return {**DEFAULTS["location"], **settings.get("location", {})}
+
+    def ingest_status():
+        status = app.extensions["ingest_status"]
+        with status["lock"]:
+            last_message_at = status["last_message_at"]
+            last_error = status["last_error"]
+        connected = False
+        if last_message_at:
+            try:
+                message_time = datetime.fromisoformat(last_message_at)
+                if message_time.tzinfo is None:
+                    message_time = message_time.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - message_time).total_seconds()
+                connected = -3 <= age <= 6
+            except ValueError:
+                connected = False
+        return {
+            "connected": connected,
+            "state": "connected" if connected else "disconnected",
+            "last_message_at": last_message_at,
+            "last_error": last_error,
+        }
 
     def load_weather(force=False):
         cache = app.extensions["weather_cache"]
@@ -82,7 +111,49 @@ def create_app(test_config=None):
     def live():
         reading = database.get_latest_reading(app.config["DATABASE_PATH"])
         serial_status = app.extensions["serial_service"].status()
-        return response({"reading": reading, "arduino": serial_status})
+        return response({"reading": reading, "arduino": serial_status, "ingest": ingest_status()})
+
+    @app.post("/api/ingest")
+    def ingest():
+        configured_token = app.config.get("INGEST_TOKEN")
+        if not configured_token:
+            return response(error="Sensor ingestion is not configured on this server.", status=503)
+
+        authorization = request.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer ") or not hmac.compare_digest(
+            authorization.removeprefix("Bearer "), configured_token
+        ):
+            return response(error="Unauthorized sensor ingestion request.", status=401)
+
+        payload = request.get_json(silent=True)
+        try:
+            from backend.serial_service import validate_reading
+            reading = validate_reading(payload)
+        except (TypeError, ValueError) as error:
+            status = app.extensions["ingest_status"]
+            with status["lock"]:
+                status["last_error"] = str(error)
+            return response(error=f"Invalid sensor reading: {error}", status=400)
+
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            _, inserted = database.insert_reading(app.config["DATABASE_PATH"], reading, timestamp)
+            alert_service.evaluate_reading(app.config["DATABASE_PATH"], reading)
+        except sqlite3.Error as error:
+            status = app.extensions["ingest_status"]
+            with status["lock"]:
+                status["last_error"] = f"Sensor data received, but database save failed: {error}"
+                status["last_reading"] = {**reading, "timestamp": timestamp}
+                status["last_message_at"] = timestamp
+            app.logger.exception("Could not store ingested sensor reading.")
+            return response(error="Sensor data could not be saved.", status=500)
+
+        status = app.extensions["ingest_status"]
+        with status["lock"]:
+            status["last_error"] = None
+            status["last_reading"] = {**reading, "timestamp": timestamp}
+            status["last_message_at"] = timestamp
+        return response({"reading": {**reading, "timestamp": timestamp}, "inserted": inserted})
 
     @app.get("/api/history")
     def history():
@@ -160,6 +231,7 @@ def create_app(test_config=None):
             database_status = {"connected": False, "message": str(error)}
         return response({
             "arduino": app.extensions["serial_service"].status(),
+            "ingest": ingest_status(),
             "database": database_status,
             "weather": {"status": (app.extensions["weather_cache"]["data"] or {}).get("status", "not_checked")},
         })
@@ -229,5 +301,11 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.extensions["serial_service"].start()
-    app.run(host="127.0.0.1", port=int(os.getenv("PORT", "5000")), debug=False, threaded=True)
+    if not app.config["CLOUD_DEPLOYMENT"]:
+        app.extensions["serial_service"].start()
+    app.run(
+        host="0.0.0.0" if app.config["CLOUD_DEPLOYMENT"] else "127.0.0.1",
+        port=int(os.getenv("PORT", "5000")),
+        debug=False,
+        threaded=True,
+    )

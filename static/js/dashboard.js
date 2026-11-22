@@ -59,6 +59,7 @@
       const result = await Atmos.api("/api/live");
       const reading = result.reading;
       const serial = result.arduino;
+      const ingest = result.ingest;
       const display = (selector, value, suffix = "") => {
         const element = $(selector);
         if (element) element.textContent = value === null || value === undefined ? "--" : `${value}${suffix}`;
@@ -67,7 +68,9 @@
       display("#humidity-value", reading?.humidity, "");
       display("#air-value", reading?.air_quality, "");
       display("#rain-value", reading?.rain_value, "");
-      const sensorState = serial.state || (serial.connected ? "connected" : "disconnected");
+      const sensorState = ingest?.state === "connected"
+        ? "connected"
+        : serial.state || (serial.connected ? "connected" : "disconnected");
       const isConnected = sensorState === "connected";
       if ($("#temperature-note")) {
         $("#temperature-note").textContent = !reading
@@ -80,12 +83,14 @@
       }
       if ($("#rain-note")) $("#rain-note").textContent = reading ? "Raw analog reading · see Settings for threshold" : "Raw analog reading";
       if ($("#last-updated")) $("#last-updated").textContent = reading ? Atmos.formatDate(reading.timestamp) : "Waiting for Arduino…";
-      updateArduinoStatus(serial);
-      const portName = serial.port || "configured port";
+      updateArduinoStatus({ state: sensorState });
+      const portName = ingest?.state === "connected" ? "cloud bridge" : serial.port || "configured port";
       const stateLabels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected" };
       if ($("#sidebar-serial-status")) $("#sidebar-serial-status").textContent = `${stateLabels[sensorState] || "Disconnected"} · ${portName}`;
       if ($("#arduino-status-detail")) {
-        $("#arduino-status-detail").textContent = serial.last_error
+        $("#arduino-status-detail").textContent = ingest?.state === "connected"
+          ? "Valid sensor JSON received through the cloud bridge"
+          : serial.last_error
           ? `Serial error: ${serial.last_error}`
           : isConnected
             ? `Valid JSON received on ${portName} · 9600 baud`
@@ -96,8 +101,11 @@
       const sensorError = $("#sensor-error-note");
       if (sensorError) {
         const dhtError = reading && (reading.temperature == null || reading.humidity == null);
-        sensorError.hidden = Boolean(reading && isConnected && !dhtError && !serial.last_error);
-        if (serial.last_error) sensorError.textContent = `Arduino serial message: ${serial.last_error}`;
+        sensorError.hidden = Boolean(reading && isConnected && !dhtError && !(ingest?.last_error || serial.last_error));
+        if (ingest?.state === "connected") {
+          if (dhtError) sensorError.textContent = "The DHT11 returned no temperature or humidity value. Check its wiring; the analog sensors may still be working.";
+          else sensorError.textContent = "Cloud sensor data is connected.";
+        } else if (serial.last_error) sensorError.textContent = `Arduino serial message: ${serial.last_error}`;
         else if (!isConnected && sensorState === "disconnected") sensorError.textContent = `No recent valid sensor data. Check ${portName}, then close Arduino Serial Monitor so Flask can reconnect.`;
         else if (dhtError) sensorError.textContent = "The DHT11 returned no temperature or humidity value. Check its wiring; the analog sensors may still be working.";
         else if (sensorState === "connecting") sensorError.textContent = `Waiting for a valid JSON sensor line from ${portName}.`;
