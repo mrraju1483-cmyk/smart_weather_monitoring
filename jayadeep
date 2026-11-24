@@ -1,0 +1,182 @@
+
+# Import Libraries
+import pandas as pd
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    confusion_matrix,
+    classification_report
+)
+
+
+# Load Dataset
+path = "train.csv"
+
+df = pd.read_csv(path)
+
+print("First 5 Records")
+print(df.head())
+
+print("\nDataset Shape")
+print(df.shape)
+
+
+# Data Preprocessing
+df = df.drop(
+    ['PassengerId', 'Name', 'Ticket', 'Cabin'],
+    axis=1
+)
+
+# Handle Missing Values
+df['Age'] = df['Age'].fillna(df['Age'].median())
+
+df['Embarked'] = df['Embarked'].fillna(
+    df['Embarked'].mode()[0]
+)
+
+print("\nMissing Values")
+print(df.isnull().sum())
+
+
+# Encoding
+encoder = LabelEncoder()
+
+df['Sex'] = encoder.fit_transform(df['Sex'])
+
+df['Embarked'] = encoder.fit_transform(df['Embarked'])
+
+print("\nAfter Encoding")
+print(df.head())
+
+
+# Feature Target Split
+X = df.drop('Survived', axis=1)
+
+y = df['Survived']
+
+
+# Train Test Split
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.3,
+    random_state=42,
+    stratify=y
+)
+
+print("\nTraining Data Size")
+print(X_train.shape)
+
+print("\nTesting Data Size")
+print(X_test.shape)
+
+
+# Decision Tree Model
+dt_model = DecisionTreeClassifier(random_state=42)
+
+dt_model.fit(X_train, y_train)
+
+dt_prediction = dt_model.predict(X_test)
+
+
+# Random Forest Model
+rf_model = RandomForestClassifier(
+    n_estimators=100,
+    random_state=42
+)
+
+rf_model.fit(X_train, y_train)
+
+rf_prediction = rf_model.predict(X_test)
+
+
+# Evaluation Function
+def evaluate_model(name, y_test, prediction):
+
+    accuracy = accuracy_score(y_test, prediction)
+
+    precision = precision_score(
+        y_test, prediction, zero_division=0
+    )
+
+    recall = recall_score(
+        y_test, prediction, zero_division=0
+    )
+
+    f1 = f1_score(
+        y_test, prediction, zero_division=0
+    )
+
+    print("\n" + "=" * 40)
+    print(name)
+    print("=" * 40)
+
+    print("\nAccuracy:", accuracy)
+
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y_test, prediction))
+
+    print("\nClassification Report:")
+    print(classification_report(
+        y_test,
+        prediction,
+        zero_division=0
+    ))
+
+    return [name, accuracy, precision, recall, f1]
+
+
+# Model Evaluation
+dt_result = evaluate_model(
+    "Decision Tree Classifier",
+    y_test,
+    dt_prediction
+)
+
+rf_result = evaluate_model(
+    "Random Forest Classifier",
+    y_test,
+    rf_prediction
+)
+
+
+# Comparison Table
+comparison = pd.DataFrame(
+    [dt_result, rf_result],
+    columns=[
+        "Model",
+        "Accuracy",
+        "Precision",
+        "Recall",
+        "F1 Score"
+    ]
+)
+
+print("\n" + "=" * 40)
+print("Performance Comparison")
+print("=" * 40)
+
+print(comparison)
+
+
+# Best Model
+best_model = comparison.loc[
+    comparison['F1 Score'].idxmax()
+]
+
+print("\n" + "=" * 40)
+print("Best Performing Model")
+print("=" * 40)
+
+print("Best Model:", best_model['Model'])
+
+print("Best F1 Score:", best_model['F1 Score'])
